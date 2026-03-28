@@ -167,10 +167,10 @@ AI_money_mentor/
 
 ## 👨‍💻 Team Falcon001
 
-- **Abhay Jagatiya** — Core Logic & Architecture
-- **Charitarth Zinzuwadiya** — Full Stack Development & UI/UX
-- **Vansh Ganchi** — Data Security & API Integration
-- **Nandani Solgama** — Documentation & Research
+- **Abhay Jagatiya** 
+- **Charitarth Zinzuwadiya** 
+- **Vansh Ganchi** 
+- **Nandani Solgama** 
 
 ---
 
