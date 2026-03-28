@@ -150,8 +150,18 @@ export default function AddTransactionModal({ onClose, onSaved, isDark }: Props)
               onChange={(e) => setCategory(e.target.value)}
               className={`w-full pl-10 pr-4 py-3 rounded-2xl border outline-none transition-all appearance-none ${inputCls}`}
             >
-              <option value="">Select Category</option>
-              {activeCategories.map((c: string) => <option key={c} value={c}>{c}</option>)}
+              <option value="" className={isDark ? "bg-[#0e1117] text-white" : "bg-white text-slate-900"}>
+                Select Category
+              </option>
+              {activeCategories.map((c: string) => (
+                <option 
+                  key={c} 
+                  value={c} 
+                  className={isDark ? "bg-[#0e1117] text-white" : "bg-white text-slate-900"}
+                >
+                  {c}
+                </option>
+              ))}
             </select>
           </div>
 

@@ -99,7 +99,7 @@ export default function TransactionTable({ transactions = [], onRefresh }: Props
                         className="w-full bg-black/30 border border-white/10 rounded-lg px-2 py-1 text-xs text-white outline-none"
                       >
                         {CATEGORIES[(editForm.type as "income" | "expense") || "expense"].map(c => (
-                          <option key={c} value={c}>{c}</option>
+                          <option key={c} value={c} className="bg-[#0e1117] text-white">{c}</option>
                         ))}
                       </select>
                     </td>
@@ -117,8 +117,8 @@ export default function TransactionTable({ transactions = [], onRefresh }: Props
                         onChange={e => setEditForm(f => ({ ...f, type: e.target.value, category: "" }))}
                         className="bg-black/30 border border-white/10 rounded-lg px-2 py-1 text-xs text-white outline-none"
                       >
-                        <option value="income">income</option>
-                        <option value="expense">expense</option>
+                        <option value="income" className="bg-[#0e1117] text-white">income</option>
+                        <option value="expense" className="bg-[#0e1117] text-white">expense</option>
                       </select>
                     </td>
                     <td className="py-2 px-2">
