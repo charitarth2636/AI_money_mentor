@@ -70,16 +70,6 @@ Response (Actionable Financial Advice)
 
 ---
 
-## 📸 Screenshots
-
-![Dashboard Preview](./screenshots/dashboard.png)
-*Bento-style dashboard showing real-time wealth insights.*
-
-![AI Mentor Chat](./screenshots/mentor.png)
-*Human-like AI Mentor discussing personalized financial plans.*
-
----
-
 ## 🛠 Tech Stack
 
 - **Frontend:** Next.js 15 (App Router), Tailwind CSS 4, Framer Motion (Animations), Recharts.
