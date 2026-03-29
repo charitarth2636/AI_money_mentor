@@ -4,6 +4,7 @@ class GoalBase(BaseModel):
     title: str = Field(..., description="Name of the financial goal")
     current: float = Field(0.0, description="Current amount saved towards goal")
     target: float = Field(..., description="Target amount to reach")
+    source: str = Field("manual", description="manual or onboarding")
 
 class GoalCreate(GoalBase):
     pass

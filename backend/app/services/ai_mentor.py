@@ -3,6 +3,7 @@ AI Mentor Service — Intelligent Financial Assistant
 Architecture:  User Input → Intent Detection → Finance Engine → LLM → Response
 """
 import re
+from datetime import datetime, timezone
 from groq import Groq
 from app.core.config import settings
 from app.core.database import get_database
@@ -12,6 +13,7 @@ from app.services.finance_engine import (
     build_calculation_brief,
     format_inr,
 )
+import json
 
 client = Groq(api_key=settings.GROQ_API_KEY)
 
@@ -153,9 +155,70 @@ def build_greeting_response(lang: str, user_name: str = "") -> str:
 
 
 # ────────────────────────────────────────────────────────────────
-# MAIN AI REPLY FUNCTION
+# INTENT ANALYSIS (Low-level extraction)
 # ────────────────────────────────────────────────────────────────
-async def get_ai_reply(user_id: str, message: str, profile_dict: dict) -> str:
+INTENT_SYSTEM_PROMPT = """You are a high-precision Financial Intent Extractor.
+Extract structured intents from user messages as JSON.
+VALID ACTIONS: ADD_TRANSACTION, DELETE_TRANSACTION, ADD_GOAL, UPDATE_GOAL, QUERY
+JSON SCHEMA:
+{
+  "action": "ACTION_NAME",
+  "params": {
+    "amount": number,
+    "type": "income" | "expense",
+    "category": "string",
+    "description": "string",
+    "title": "goal title"
+  }
+}
+- If it's a general question, return {"action": "QUERY"}.
+- If the user confirms a previous action (Yes/Haan/Ok), return {"action": "CONFIRM"}.
+- If uncertainty, return {"action": "QUERY"}.
+Do NOT explain. Return JSON only.
+"""
+
+async def analyze_intent(message: str, history: list = []) -> dict:
+    """
+    Calls LLM to extract JSON intent.
+    """
+    messages = [{"role": "system", "content": INTENT_SYSTEM_PROMPT}]
+    # Minimal history for intent awareness
+    for doc in history[-2:]:
+        messages.append({"role": "user", "content": doc["user_msg"]})
+        messages.append({"role": "assistant", "content": doc["ai_reply"]})
+    
+    messages.append({"role": "user", "content": message})
+    
+    try:
+        response = client.chat.completions.create(
+            messages=messages,
+            model="llama-3.1-8b-instant",
+            temperature=0,
+            max_tokens=200,
+            response_format={"type": "json_object"}
+        )
+        return json.loads(response.choices[0].message.content)
+    except Exception:
+        return {"action": "QUERY"}
+
+def requires_confirmation(intent: dict) -> bool:
+    """Check if action needs user approval."""
+    action = intent.get("action")
+    params = intent.get("params", {})
+    if action in ["DELETE_TRANSACTION", "DELETE_GOAL"]:
+        return True
+    
+    amount = float(params.get("amount", 0))
+    if amount > 50000:
+        return True
+    
+    return False
+
+
+# ────────────────────────────────────────────────────────────────
+# MAIN AI REPLY FUNCTION (Grounded Explanation)
+# ────────────────────────────────────────────────────────────────
+async def get_ai_reply(user_id: str, message: str, profile_dict: dict, action_summary: str = "") -> str:
     db = get_database()
 
     # 1. Clean input
@@ -227,14 +290,39 @@ async def get_ai_reply(user_id: str, message: str, profile_dict: dict) -> str:
     else:
         calc_block = "GOAL: General financial question — no specific calculation needed."
 
-    # 11. User data summary
-    surplus_display  = format_inr(max(surplus, 0)) if surplus is not None else "Not provided"
+    # 11. User data summary (STRICT BOUNDARY)
+    active_goals_str = "\n".join([
+        f"• {g['title']}: {format_inr(g['current'])} / {format_inr(g['target'])} [{'COMPLETED' if g.get('is_completed') else 'ACTIVE'}]"
+        for g in profile_dict.get("active_goals", [])
+    ]) or "no goals found"
+    
+    # Strictly categories derived from data
+    cats = profile_dict.get("tx_category_totals", {})
+    top_cats_str = ", ".join([f"{cat}: {format_inr(amt)}" for cat, amt in cats.items()]) if cats else "no category data yet"
+
+    # Recent transactions
+    recent_txs = profile_dict.get("recent_transactions", [])
+    recent_txs_str = "\n".join([f"• {t['date']}: {format_inr(t['amount'])} - {t['category']} ({t['desc']})" for t in recent_txs]) if recent_txs else "no recent transactions"
+
+    surplus_val = surplus if surplus is not None else 0
+    surplus_display  = format_inr(max(surplus_val, 0))
+    
     user_data_block  = (
-        f"Income: {format_inr(monthly_income)}/month | "
-        f"Expenses: {format_inr(monthly_expenses)}/month | "
-        f"Surplus: {surplus_display}/month | "
-        f"Health Score: {health_score}%"
+        f"RAW_INCOME: {monthly_income} | RAW_EXPENSE: {monthly_expenses} | RAW_SURPLUS: {surplus_val}\n"
+        f"Income: {format_inr(monthly_income)} | Expenses: {format_inr(monthly_expenses)} | Surplus: {surplus_display}\n"
+        f"Health Score: {health_score}%\n"
+        f"Active Goals:\n{active_goals_str}\n"
+        f"Top Spending: {top_cats_str}\n"
+        f"Recent History:\n{recent_txs_str}"
     )
+
+    # Status check
+    if not data_complete:
+        user_data_status = "DATA_INCOMPLETE: Income/expense data missing. Refuse detailed advice, ask for data."
+    elif not cats:
+        user_data_status = "PARTIAL_DATA: No transaction categories yet. Mention user needs to add more detailed expenses."
+    else:
+        user_data_status = "DATA_COMPLETE: Use provided categories and transactions for grounding."
 
     # 12. Priority advice
     if health_score < 40:
@@ -268,180 +356,90 @@ async def get_ai_reply(user_id: str, message: str, profile_dict: dict) -> str:
         )
 
     # 15. Build the system prompt ──────────────────────────────────
-    system_prompt = f"""You are "Money Mentor" — a smart, human-like financial advisor for Indian users.
-Behave like a trusted CA friend: give CLEAR opinions, not vague answers.
+    system_prompt = f"""You are "Money Mentor" — a natural, data-driven financial advisor.
+Your objective: Give human-like, non-repetitive advice based ONLY on the user context provided.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-USER DATA (ground truth — NEVER change these numbers):
+━━━ CORE INTEGRITY RULES ━━━
+- ADVISOR BOUNDARY: You provide explanations and guidance. The backend executes actions. 
+- CALCULATION INTEGRITY: Use ONLY values from USER DATA and CALCULATION blocks. NEVER calculate, estimate, or guess health scores, surpluses, or timelines yourself. If data is missing, say it.
+- GROUNDING: Your entire answer must be grounded in the provided numeric state.
+- ACTION CONFIRMATION: If an action summary is provided, confirm it gracefully (e.g., "I've added that expense for you").
+- NO FAKE SUCCESS: Do not claim an action happened unless the "Action Summary" confirms it.
+
+━━━ PERSONA ━━━
+- Conversational, professional Financial Advisor. Use bolding (**amount**) for numbers.
+- NO TEMPLATES. NO REPETITION. NO FILLER. 
+- If user asks for action you can't infer, ask for missing details (amount, category).
+
+━━━ CONTEXT ━━━
+Status: {user_data_status}
 {user_data_block}
 
-CALCULATION (copy EXACTLY — NEVER invent numbers):
+━━━ CALCULATION ━━━
 {calc_block}
 
-ADVISOR STATUS: {priority_note}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-{intent_rule}
-
-━━━ RULE 1 — DECISION MAKING (most important) ━━━
-Always give a SPECIFIC, CLEAR recommendation. Never be vague.
-
-❌ WRONG: "Both saving and investing are good options."
-✅ RIGHT: "Best: ₹12k saving + ₹4.5k SIP (70/30 split)"
-
-❌ WRONG: "It depends on your situation."
-✅ RIGHT: "Based on your data: [specific answer]"
-
-━━━ RULE 2 — RESPONSE FORMAT ━━━
-🔹 Goal: [what user wants, one clear line]
-📊 Required: [COPY from CALCULATION above — exact numbers only]
-⚡ Best Plan:
-  • Option 1: [safest route]
-  • Option 2: [balanced — RECOMMEND THIS] ← mark your pick
-  • Option 3: [fastest / EMI if relevant]
-👉 [ONE clear next step OR one specific question if data missing]
-
-━━━ RULE 3 — NO REPETITION ━━━
-Check conversation history. If advice was already given, do NOT repeat it.
-Move conversation forward. Ask a follow-up or explore a new angle.
-
-━━━ RULE 4 — MISSING DATA ━━━
-If income/expenses are missing:
-→ Ask MAX 2 specific questions in one message.
-→ Example: "Aapki monthly income aur expenses kya hain?"
-→ Then STOP. Wait. Do NOT guess.
-
-━━━ RULE 5 — CONTEXT CONTINUATION ━━━
-If user says "ok", "haan", "theek", "1"/"2"/"3", or any short reply:
-→ Continue DIRECTLY from previous topic
-→ Do NOT show menu again
-→ Do NOT restart conversation
-
-━━━ ABSOLUTE FORBIDDEN ━━━
-- NEVER invent any number (income, surplus, savings, shortage)
-- NEVER say FDs or Mutual Funds are tax-free (they are TAXABLE)
-- NEVER write negative/shortage amounts unless present in CALCULATION
-- If CALCULATION says "NOT AVAILABLE" → ask for data, do NOT guess
-- Keep response under 130 words
-- {lang_rule}
-- Indian number style: lakh, crore — NEVER million/billion
-- If user picks option "3" → pick up from chat history context naturally
+ACTION STATUS: {action_summary or "None - Answer the question directly."}
+ADVISOR NOTE: {priority_note}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
     # 16. Build messages with rich few-shot examples ───────────────
     messages = [{"role": "system", "content": system_prompt}]
 
     messages += [
-        # ── EXAMPLE 1: Simple goal with calculation ──
+        # --- EXAMPLE 1: Goal question ---
         {
             "role": "user",
-            "content": "4 lakh 2 saal mein chahiye"
+            "content": "muji 1 lakh bike ke liye save karna hai"
         },
         {
             "role": "assistant",
             "content": (
-                "Samajh gaya 👍\n\n"
-                "🔹 Goal: ₹4 lakh in 2 saal\n"
-                "📊 Required: ₹16,700/month saving\n\n"
-                "⚡ Best Plan:\n"
-                "  • Option 1: ₹16,700 pure savings (FD/RD — safest)\n"
-                "  • Option 2: ₹12k saving + ₹4,700 SIP ← Best hai\n"
-                "  • Option 3: ₹8k saving + ₹9k aggressive SIP (higher risk)\n\n"
-                "👉 Aap itna save kar paoge monthly?"
+                "Acha plan hai! 🏍️ Aapki monthly **₹15,000** ki surplus income se, aap easily **7 mahine** mein ₹1 lakh save kar lenge.\n\n"
+                "Mera suggestion: Har mahine **₹14,300** ek Liquid Fund mein dalo. Yeh safe hai aur aapko bank se better returns bhi dega. Baki ₹700 emergency ke liye rakho.\n\n"
+                "Kya aap itna monthly save kar paoge?"
             )
         },
-
-        # ── EXAMPLE 2: Saving vs Invest debate (forces DECISION) ──
+        # --- EXAMPLE 2: Spending/Category question ---
         {
             "role": "user",
-            "content": "saving better hai ya investment?"
+            "content": "Where is my money going?"
         },
         {
             "role": "assistant",
             "content": (
-                "Clear answer deta hun 💡\n\n"
-                "🔹 Goal: Savings vs Investment decide karna\n"
-                "📊 Rule of thumb: 50/30/20 formula\n\n"
-                "⚡ Best Plan:\n"
-                "  • Emergency fund nahi hai → 100% savings first\n"
-                "  • Emergency fund ready hai → 70% saving + 30% SIP ← Best\n"
-                "  • Long-term 10+ saal goal → 60% SIP + 40% saving\n\n"
-                "👉 Aapka emergency fund (3-6 months ka kharcha) ready hai?"
+                "Main aapka spending pattern dekh ke batata hun 📊\n\n"
+                "Pichle 30 din mein aapka major kharcha **Shopping (₹12,400)** aur **Food (₹8,200)** mein hua hai. Total spending ₹45,000 ke aas-paas hai.\n\n"
+                "I also saw a recent payment of **₹1,200 at Amazon** on 15 March. Maybe aap Shopping thoda kam kar sakte ho? Isse ₹5,000 extra bachega."
             )
         },
-
-        # ── EXAMPLE 3: Car loan question ──
+        # --- EXAMPLE 3: Generic advice with missing data ---
         {
             "role": "user",
-            "content": "muje 15 lakh ki car leni hai"
+            "content": "Should I invest in stocks?"
         },
         {
             "role": "assistant",
             "content": (
-                "🔹 Goal: Car — ₹15 lakh\n"
-                "📊 Required:\n"
-                "  • 1 saal mein: ₹1.25 lakh/month\n"
-                "  • 2 saal mein: ₹62,500/month\n\n"
-                "⚡ Best Plan:\n"
-                "  • Option 1: ₹62,500/month save — 2 saal (zero debt) ← Best\n"
-                "  • Option 2: ₹30k down + 5yr loan = ₹25,500 EMI/month\n"
-                "  • Option 3: ₹7.5L save + ₹7.5L loan (50/50 split)\n\n"
-                "👉 Kitne time mein lena chahte ho?"
+                "Stocks long-term wealth ke liye badhiya hain, par pehle safety dekhte hain. 👍\n\n"
+                "Mujhe aapke data mein koi **Emergency Fund** ya **Insurance** nahi dikh raha. Rule ye hai ki pehle 6 mahine ka kharcha save karo, phir stocks mein paisa dalo.\n\n"
+                "Kya aapka koi emergency fund ready hai?"
             )
         },
-
-        # ── EXAMPLE 4: 3 lakh savings (English) ──
+        # --- EXAMPLE 4: Advisor Boundary Check ---
         {
             "role": "user",
-            "content": "I have 3 lakhs saved, what should I do?"
+            "content": "Add a new goal for ₹5 lakh for my wedding"
         },
         {
             "role": "assistant",
             "content": (
-                "Great start! Here's the smartest allocation 👇\n\n"
-                "🔹 Goal: Deploy ₹3 lakh wisely\n"
-                "📊 Ideal split based on financial best practices:\n\n"
-                "⚡ Best Plan:\n"
-                "  • ₹1.5L → Emergency Fund (keep in liquid fund) — do this FIRST\n"
-                "  • ₹1L   → Index Fund SIP start (₹8,300/month) ← Recommended\n"
-                "  • ₹50K  → Keep liquid for short-term needs\n\n"
-                "👉 Do you already have an emergency fund (3-6 months expenses)?"
+                "Shaadi ki taiyari! Bohot badiya. 💍\n\n"
+                "Main appke liye goals add nahi kar sakta directly, par app AI Money Mentor ke **Add Goal** button pe click karke ₹5 lakh ka target set kar sakte hain.\n\n"
+                "Once you add it, main appko best saving strategy bata dunga. Kya hum monthly bachat calculate karein?"
             )
-        },
-
-        # ── EXAMPLE 5: CONTINUATION — user says "haan" ──
-        {
-            "role": "user",
-            "content": "haan kar sakta hun"
-        },
-        {
-            "role": "assistant",
-            "content": (
-                "Bilkul badhiya! 🎯\n\n"
-                "Toh chalte hain Option 2 pe — ₹12k saving + ₹4,700 SIP.\n\n"
-                "⚡ Next step:\n"
-                "  1. Kal se ₹12,000 ek alag savings account mein transfer karo\n"
-                "  2. Kisi bhi app (Groww, Zerodha) pe ₹4,700 ka monthly SIP set karo\n"
-                "  3. 3 mahine baad review karein\n\n"
-                "👉 SIP ke liye Nifty 50 Index Fund best rahega — kam risk, achha return."
-            )
-        },
-
-        # ── EXAMPLE 6: Greet + option "1" ──
-        {
-            "role": "user",
-            "content": "1"
-        },
-        {
-            "role": "assistant",
-            "content": (
-                "Perfect! Naya plan banate hain 📋\n\n"
-                "Mujhe 2 cheezein chahiye:\n\n"
-                "1️⃣ Aapki **monthly income** kitni hai? (e.g. ₹50,000)\n"
-                "2️⃣ Rough **monthly kharcha** kitna hai? (e.g. ₹35,000)\n\n"
-                "Yeh batao — rest main calculate kar dunga 😊"
-            )
-        },
+        }
     ]
 
     # Real conversation history
@@ -455,8 +453,8 @@ If user says "ok", "haan", "theek", "1"/"2"/"3", or any short reply:
     response = client.chat.completions.create(
         messages=messages,
         model="llama-3.1-8b-instant",
-        temperature=0.2,   # Lower = more deterministic, less hallucination
-        max_tokens=320,
+        temperature=0.25,   # Balanced for consistency + natural flow
+        max_tokens=350,
     )
 
     raw_reply = response.choices[0].message.content
