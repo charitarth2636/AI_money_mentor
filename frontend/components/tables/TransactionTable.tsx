@@ -12,6 +12,7 @@ type Transaction = {
   amount: number;
   type: string;
   date?: string;
+  source?: string;
 };
 
 interface Props {
@@ -144,6 +145,11 @@ export default function TransactionTable({ transactions = [], onRefresh }: Props
                   <>
                     <td className="py-3.5 px-2 font-medium text-slate-200">
                       {tx.category}
+                      {tx.source === "onboarding" && (
+                        <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-bold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 uppercase tracking-tighter">
+                          Auto
+                        </span>
+                      )}
                       {tx.description && (
                         <span className="block text-[10px] text-slate-500 font-normal">{tx.description}</span>
                       )}

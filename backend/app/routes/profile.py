@@ -4,6 +4,7 @@ from app.models.financial import FinancialProfile
 from app.core.database import get_database
 from app.core.security import get_current_user
 from app.services.health_score import calculate_health_score
+from datetime import datetime, timezone, timedelta
 
 router = APIRouter()
 
@@ -39,10 +40,86 @@ async def create_profile(profile: FinancialProfile, current_user: dict = Depends
         {"$set": {"profile_completed": True}}
     )
     
+    # ── SINGLE SOURCE OF TRUTH: SYNC ONBOARDING → TRANSACTIONS & GOALS ──
+    await sync_onboarding_data(db, user_id, profile)
+    
     return {
         "status": "success",
         "data": profile_dict
     }
+
+async def sync_onboarding_data(db, user_id: str, profile: FinancialProfile):
+    """
+    Converts onboarding data into 'Synthetic Transactions' and 'Auto Goals'.
+    Ensures idempotency by updating existing onboarding entries.
+    """
+    now = datetime.now(timezone.utc)
+    
+    # 1. SYNTHETIC TRANSACTIONS
+    onboarding_txs = [
+        {
+            "user_id": user_id,
+            "amount": profile.monthly_income,
+            "category": "Salary/Onboarding",
+            "description": "Initial Onboarding Income",
+            "type": "income",
+            "source": "onboarding",
+            "date": now
+        },
+        {
+            "user_id": user_id,
+            "amount": profile.monthly_expenses,
+            "category": "Monthly Expenses/Onboarding",
+            "description": "Initial Onboarding Expenses",
+            "type": "expense",
+            "source": "onboarding",
+            "date": now
+        },
+        {
+            "user_id": user_id,
+            "amount": profile.savings_emergency_fund,
+            "category": "Initial Balance",
+            "description": "Savings/Emergency Fund Balance",
+            "type": "income",
+            "source": "onboarding",
+            "date": now
+        }
+    ]
+
+    for tx in onboarding_txs:
+        # Match by user_id, category, and source=onboarding to update instead of duplicate
+        await db["transactions"].update_one(
+            {"user_id": user_id, "category": tx["category"], "source": "onboarding"},
+            {"$set": tx},
+            upsert=True
+        )
+
+    # 2. AUTO-GENERATED GOALS
+    # Goal 1: Emergency Fund (6 months of expenses)
+    ef_target = max(6 * profile.monthly_expenses, 10000) # Min 10k
+    ef_goal = {
+        "user_id": user_id,
+        "title": "Emergency Fund (Auto)",
+        "target": ef_target,
+        "current": profile.savings_emergency_fund,
+        "source": "onboarding"
+    }
+    
+    # Goal 2: Wealth Growth Goal
+    wg_goal = {
+        "user_id": user_id,
+        "title": "Wealth Building (Auto)",
+        "target": max(profile.savings_emergency_fund * 1.5, 50000),
+        "current": profile.savings_emergency_fund,
+        "source": "onboarding"
+    }
+
+    for goal in [ef_goal, wg_goal]:
+        await db["goals"].update_one(
+            {"user_id": user_id, "title": goal["title"], "source": "onboarding"},
+            {"$set": goal},
+            upsert=True
+        )
 
 @router.get("/profile")
 async def get_profile(current_user: dict = Depends(get_current_user)):
@@ -179,23 +256,33 @@ async def get_cashflow(current_user: dict = Depends(get_current_user)):
     income_list = []
     expense_list = []
     
-    # Use timezone-aware UTC now for consistency
     now = datetime.now(timezone.utc)
+    # Start from the current month
+    current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     for i in range(5, -1, -1):
-        # Calculate month start and end properly
-        # Logic to handle year change
-        month_start = (now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=i * 30)).replace(day=1)
-        next_month = (month_start.replace(month=month_start.month % 12 + 1, day=1) 
-                     if month_start.month < 12 
-                     else month_start.replace(year=month_start.year + 1, month=1, day=1))
+        # Calculate month offset manually to avoid timedelta(days=30) issues
+        # Offset target_month: current_month - i months
+        target_year = current_month_start.year
+        target_month = current_month_start.month - i
+        
+        while target_month <= 0:
+            target_month += 12
+            target_year -= 1
+            
+        month_start = datetime(target_year, target_month, 1, tzinfo=timezone.utc)
+        
+        # Calculate next_month for the boundary
+        if target_month == 12:
+            next_month = datetime(target_year + 1, 1, 1, tzinfo=timezone.utc)
+        else:
+            next_month = datetime(target_year, target_month + 1, 1, tzinfo=timezone.utc)
 
-        # Query income for this month
+        # Aggregation pipelines for Income & Expense
         pipeline_income = [
             {"$match": {"user_id": user_id, "type": "income", "date": {"$gte": month_start, "$lt": next_month}}},
             {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
         ]
-        # Query expense for this month
         pipeline_expense = [
             {"$match": {"user_id": user_id, "type": "expense", "date": {"$gte": month_start, "$lt": next_month}}},
             {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
@@ -205,8 +292,8 @@ async def get_cashflow(current_user: dict = Depends(get_current_user)):
         expense_res = await db["transactions"].aggregate(pipeline_expense).to_list(1)
 
         months_list.append(month_start.strftime("%b"))
-        income_list.append(income_res[0]["total"] if income_res else 0)
-        expense_list.append(expense_res[0]["total"] if expense_res else 0)
+        income_list.append(income_res[0]["total"] if income_res else 0.0)
+        expense_list.append(expense_res[0]["total"] if expense_res else 0.0)
 
     return {
         "status": "success", 

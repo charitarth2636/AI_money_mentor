@@ -7,6 +7,7 @@ class TransactionBase(BaseModel):
     description: str = Field("", description="Optional text description")
     date: datetime = Field(default_factory=datetime.utcnow)
     type: str = Field(..., description="income or expense")
+    source: str = Field("manual", description="manual or onboarding")
 
 class TransactionCreate(TransactionBase):
     pass
