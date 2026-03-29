@@ -175,7 +175,7 @@ export default function DashboardPage() {
         {/* 3-COLUMN SUMMARY */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className={bentoStyle}>
-            <SummaryCard title="Current Liquidity" value={`₹${(profile.savings_emergency_fund || 0).toLocaleString("en-IN")}`} />
+            <SummaryCard title="Current Liquidity" value={`₹${(healthData?.net_balance ?? profile.savings_emergency_fund ?? 0).toLocaleString("en-IN")}`} />
             <div className="mt-4 flex items-center gap-2 text-xs text-emerald-500 font-bold">
               <TrendingUp size={14} /> Available
             </div>

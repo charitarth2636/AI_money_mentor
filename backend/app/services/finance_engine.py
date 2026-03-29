@@ -52,36 +52,44 @@ def extract_amount_from_text(text: str) -> Optional[float]:
 # GOAL DETECTION
 # ─────────────────────────────────────────
 
-# Keyword → (default_target, label)
+# Keyword → Base Label
 GOAL_MAP = {
-    "car":          (1_500_000, "New Car (₹15 lakh default)"),
-    "bike":         (150_000,   "New Bike (₹1.5 lakh default)"),
-    "iphone":       (80_000,    "iPhone"),
-    "phone":        (30_000,    "Smartphone"),
-    "laptop":       (80_000,    "Laptop"),
-    "house":        (5_000_000, "House (₹50 lakh default)"),
-    "flat":         (5_000_000, "Flat (₹50 lakh default)"),
-    "vacation":     (200_000,   "Vacation (₹2 lakh default)"),
-    "trip":         (100_000,   "Trip"),
-    "wedding":      (1_000_000, "Wedding (₹10 lakh default)"),
-    "education":    (500_000,   "Education"),
-    "emergency":    (300_000,   "Emergency Fund (6-month default)"),
+    "car":          "Car",
+    "bike":         "Bike",
+    "iphone":       "iPhone",
+    "phone":        "Smartphone",
+    "laptop":       "Laptop",
+    "house":        "House",
+    "flat":         "Flat",
+    "vacation":     "Vacation",
+    "trip":         "Trip",
+    "wedding":      "Wedding",
+    "education":    "Education",
+    "emergency":    "Emergency Fund",
 }
 
-def detect_goal(message: str) -> Tuple[Optional[float], str]:
+def detect_goal(message: str, user_goals: list = []) -> Tuple[Optional[float], str]:
     """
     Returns (target_amount, label) or (None, "") if no goal detected.
-    Tries to extract explicit amount first; falls back to keyword defaults.
+    1. Checks if message matches an EXISTING user goal.
+    2. Tries to extract explicit amount from message.
+    3. NO more fake defaults — returns None if amount unknown.
     """
     msg_lower = message.lower()
+    
+    # 1. Check for matches against EXISTING user goals first
+    for g in user_goals:
+        title = g.get("title", "").lower()
+        if title in msg_lower or any(kw in title for kw in msg_lower.split()):
+            return g.get("target"), g.get("title")
 
-    # Try extracting an explicit amount first
+    # 2. Try extracting an explicit amount from the text
     explicit_amount = extract_amount_from_text(message)
 
-    for keyword, (default_amount, label) in GOAL_MAP.items():
+    for keyword, label in GOAL_MAP.items():
         if keyword in msg_lower:
-            amount = explicit_amount if explicit_amount and explicit_amount > 1000 else default_amount
-            return amount, label
+            # If explicit amount exists, use it. Otherwise, return the label without a target.
+            return explicit_amount, label
 
     # No keyword, but an amount was mentioned → generic goal
     if explicit_amount and explicit_amount > 1000:
@@ -144,10 +152,10 @@ def calculate_emi(principal: float, annual_rate: float, months: int) -> float:
 def build_calculation_brief(message: str, surplus: float, profile: dict) -> dict:
     """
     Run all relevant calculations and return a dict of facts.
-    Returns None values for fields when data is unavailable.
-    This dict is injected as STRICT TRUTH into the AI system prompt.
     """
-    target, goal_label = detect_goal(message)
+    user_goals = profile.get("active_goals", [])
+    target, goal_label = detect_goal(message, user_goals)
+    
     brief = {
         "goal_label": goal_label or "General Advice",
         "target_amount": target,

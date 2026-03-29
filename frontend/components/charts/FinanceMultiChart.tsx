@@ -58,27 +58,12 @@ export default function FinanceMultiChart({ refreshKey = 0 }: { refreshKey?: num
           const anyReal = income.some((val: number) => val > 0) || expenses.some((val: number) => val > 0);
           setHasRealData(anyReal);
 
-          if (anyReal) {
-            const mapped = months.map((m: string, i: number) => ({
-              month: m,
-              income: income[i] || 0,
-              expense: expenses[i] || 0,
-            }));
-            setData(mapped);
-          } else {
-            const profRes = await fetchWithAuth("/profile");
-            if (profRes.ok) {
-              const prof = (await profRes.json()).data;
-              const inc = prof.monthly_income || 0;
-              const exp = prof.monthly_expenses || 0;
-              const fallback = (months.length ? months : ["Jan", "Feb", "Mar", "Apr", "May", "Jun"]).map((m: string) => ({
-                month: m,
-                income: inc,
-                expense: exp
-              }));
-              setData(fallback);
-            }
-          }
+          const mapped = months.map((m: string, i: number) => ({
+            month: m,
+            income: income[i] || 0,
+            expense: expenses[i] || 0,
+          }));
+          setData(mapped);
         }
       } catch (e) {
         console.error("Cashflow fetch error:", e);
