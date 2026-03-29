@@ -105,7 +105,7 @@ npm run dev
 ## 👨‍💻 Team Falcon001
 - **Abhay Jagatiya**
 - **Charitarth Zinzuwadiya**
-- **Vansh Ganchi**
+- **Vansh Ghanchi**
 - **Nandani Solgama**
 
 ---
